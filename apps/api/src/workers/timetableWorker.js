@@ -1,208 +1,277 @@
 const TimetableDraft = require('../models/TimetableDraft');
 const Timetable = require('../models/Timetable');
+const TimetableStatus = require('../models/TimetableStatus');
 const Class = require('../models/Class');
+const Section = require('../models/Section');
 const Subject = require('../models/Subject');
 const TeacherProfile = require('../models/TeacherProfile');
+const SubjectGroup = require('../models/SubjectGroup');
+const mongoose = require('mongoose');
 
-exports.runTimetableAlgorithm = async (data) => {
-  const { schoolId, classId, sectionId, shift } = data;
-  console.log(`[Worker] Processing timetable generation for classId: ${classId}, sectionId: ${sectionId}`);
-
-  // Simulate heavy CSP Backtracking calculation (NP-hard simulation)
-  await new Promise((resolve) => setTimeout(resolve, 4000));
-
-  // 1. Fetch Class and Subjects
-  const classDoc = await Class.findById(classId);
-  let subjects = await Subject.find({ schoolId, stage: classDoc.stage });
-
-  // Apply strict CBSE stream-level validation to prevent cross-stream mapping (e.g. Science subjects in Arts)
-  if (classDoc.stream) {
-    const streamMap = {
-      'Arts': ['History', 'Political Science', 'Geography', 'Economics', 'English', 'Hindi', 'Physical Education', 'Art'],
-      'Science': ['Physics', 'Chemistry', 'Biology', 'Mathematics', 'Computer Science', 'English', 'Physical Education', 'Information Technology'],
-      'Commerce': ['Accountancy', 'Business Studies', 'Economics', 'Mathematics', 'English', 'Physical Education', 'Information Technology']
-    };
-
-    const allowedSubjects = streamMap[classDoc.stream] || [];
-    if (allowedSubjects.length > 0) {
-      subjects = subjects.filter(sub => 
-        allowedSubjects.some(allowed => sub.name.toLowerCase().includes(allowed.toLowerCase()))
+// Phase 2: Build Section Slot Plan
+function buildSectionSlotPlan(section, subjects, subjectGroups) {
+  let requiredSubjects = [];
+  if (section.classId.level >= 11) {
+    const group = subjectGroups.find(
+      g => g.classId.equals(section.classId._id) && g.stream === section.classId.stream
+    );
+    if (group) {
+      requiredSubjects = subjects.filter(s => 
+        group.compulsorySubjectIds.includes(s._id) || 
+        group.electiveSubjectIds.includes(s._id)
       );
     }
+  } else {
+    requiredSubjects = subjects.filter(s => s.classId.equals(section.classId._id));
+  }
+
+  const slots = [];
+  for (const subject of requiredSubjects) {
+    const periodsNeeded = subject.periodsPerWeek || 5; 
+    const isDouble = subject.isPractical || false; 
+
+    if (isDouble) {
+      const blocks = Math.ceil(periodsNeeded / 2);
+      for (let i = 0; i < blocks; i++) {
+        slots.push({ subjectId: subject._id, isDouble: true, periodsConsumed: 2 });
+      }
+    } else {
+      for (let i = 0; i < periodsNeeded; i++) {
+        slots.push({ subjectId: subject._id, isDouble: false, periodsConsumed: 1 });
+      }
+    }
   }
   
-  // 2. Fetch Eligible Teachers
-  const teacherProfiles = await TeacherProfile.find({
-    schoolId
-  }).populate('subjectIds');
+  // Sort double periods first
+  slots.sort((a, b) => b.periodsConsumed - a.periodsConsumed);
+  return slots;
+}
 
+// Helper: Distribute across 6 days
+function distributeAcrossWeek(slotPlan) {
   const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const schedule = [];
+  const weekPlan = new Map();
+  DAYS.forEach(d => weekPlan.set(d, []));
+  
+  let dayIdx = 0;
+  for (const slot of slotPlan) {
+    weekPlan.get(DAYS[dayIdx]).push(slot);
+    dayIdx = (dayIdx + 1) % DAYS.length;
+  }
+  return weekPlan;
+}
 
-  const addMinutes = (timeStr, mins) => {
-    let [h, m] = timeStr.split(':').map(Number);
-    let newM = m + mins;
-    let newH = h + Math.floor(newM / 60);
-    newM = newM % 60;
-    return `${newH.toString().padStart(2, '0')}:${newM.toString().padStart(2, '0')}`;
-  };
+// Phase 6: Score and Pick Teacher
+function scoreAndPick(eligibleTeachers, day, teacherWeekCount, teacherDayCount, section) {
+  const scored = eligibleTeachers.map(teacher => {
+    const tId = teacher._id.toString();
+    let score = 100;
 
-  // 3. Setup Global Availability Matrix (Double Booking Prevention)
-  const existingTimetables = await Timetable.find({ schoolId });
-  const existingDrafts = await TimetableDraft.find({ schoolId, status: 'draft' });
+    const avgWeekLoad = 30;
+    if (teacherWeekCount[tId] < avgWeekLoad) score += 15;
+    if (teacherDayCount[tId][day] <= 2) score += 20;
+    else if (teacherDayCount[tId][day] === 3) score += 10;
+    else if (teacherDayCount[tId][day] >= 4) score -= 30;
 
-  // teacherAvailability[day][period][teacherId] = boolean (true if locked)
-  const teacherAvailability = {};
-  DAYS.forEach(day => {
-    teacherAvailability[day] = {};
-    for (let i = 1; i <= 8; i++) {
-      teacherAvailability[day][i] = {};
-    }
+    if (section.classTeacherId && teacher._id.equals(section.classTeacherId)) score += 25;
+    if (section.classId.stream && teacher.streamSpecialization === section.classId.stream) score += 15;
+
+    if (teacherWeekCount[tId] >= 30) score -= 20;
+    if (teacherWeekCount[tId] >= 33) score -= 40;
+
+    return { teacher, score };
   });
 
-  const hydrateMatrix = (docList) => {
-    docList.forEach(doc => {
-      // Don't lock resources for the class we are currently generating (it might be a re-run)
-      if (doc.classId.toString() === classId && doc.sectionId.toString() === sectionId) return;
-      
-      const schedules = doc.schedule ? doc.schedule : (doc.periods ? [{ dayOfWeek: doc.dayOfWeek, periods: doc.periods }] : []);
-      schedules.forEach(daySched => {
-        if (!teacherAvailability[daySched.dayOfWeek]) return;
-        if (daySched.periods) {
-          daySched.periods.forEach(p => {
-            if (p.teacherId && teacherAvailability[daySched.dayOfWeek][p.periodNumber]) {
-               teacherAvailability[daySched.dayOfWeek][p.periodNumber][p.teacherId.toString()] = true;
-            }
-          });
+  scored.sort((a, b) => b.score - a.score);
+  const topScore = scored[0].score;
+  const topCandidates = scored.filter(s => s.score === topScore);
+  return topCandidates[Math.floor(Math.random() * topCandidates.length)].teacher;
+}
+
+function sortSectionsByDifficulty(sections) {
+  return sections.sort((a, b) => {
+    const levelDiff = (b.classId.level || 0) - (a.classId.level || 0);
+    if (levelDiff !== 0) return levelDiff;
+
+    const streamOrder = { Science: 3, Commerce: 2, Arts: 1, null: 0, undefined: 0 };
+    const streamDiff = (streamOrder[b.classId.stream] || 0) - (streamOrder[a.classId.stream] || 0);
+    if (streamDiff !== 0) return streamDiff;
+
+    if (a.shift === 'Morning' && b.shift !== 'Morning') return -1;
+    return 0;
+  });
+}
+
+// Main Algorithm Loop
+async function assignTimetable(data) {
+  const teacherBusy = {};
+  const teacherDayCount = {};
+  const teacherWeekCount = {};
+  
+  const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  data.teachers.forEach(t => {
+    const id = t._id.toString();
+    teacherBusy[id] = { Monday:new Set(), Tuesday:new Set(), Wednesday:new Set(), Thursday:new Set(), Friday:new Set(), Saturday:new Set() };
+    teacherDayCount[id] = { Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+    teacherWeekCount[id] = 0;
+  });
+
+  const timetableSlots = []; 
+  const conflicts = []; 
+
+  const sortedSections = sortSectionsByDifficulty(data.sections);
+
+  for (const section of sortedSections) {
+    const sectionId = section._id.toString();
+    const sectionShift = section.shift || 'Morning'; 
+
+    const slotPlan = buildSectionSlotPlan(section, data.subjects, data.subjectGroups);
+    const weekPlan = distributeAcrossWeek(slotPlan);
+
+    for (const [day, daySlots] of weekPlan.entries()) {
+      let periodCursor = 1; 
+
+      for (const slot of daySlots) {
+        if (periodCursor === 5) periodCursor++; // Skip lunch
+
+        if (slot.isDouble && periodCursor >= 7) {
+          conflicts.push({ sectionId, day, subjectId: slot.subjectId, reason: 'No room for double period' });
+          continue;
         }
-      });
-    });
-  };
 
-  hydrateMatrix(existingTimetables);
-  hydrateMatrix(existingDrafts);
+        const eligible = data.teachers.filter(teacher => {
+          const tId = teacher._id.toString();
+          return (
+            teacher.subjectIds.some(s => s.equals(slot.subjectId)) &&
+            !teacherBusy[tId][day].has(periodCursor) &&
+            teacherWeekCount[tId] < 35 &&
+            teacherDayCount[tId][day] < 5 &&
+            (!section.shift || teacher.assignedShift === sectionShift)
+          );
+        });
 
-  // 4. Recursive CSP Algorithm with Backtracking
-  const masterSchedule = [];
-  
-  // Pre-calculate time slots for all 8 periods based on shift
-  const timeSlots = [];
-  let currentHour = shift === 'noon' ? 13 : 7;
-  let currentMinute = shift === 'noon' ? 30 : 30;
-  let timeCursor = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
-  
-  for (let i = 1; i <= 8; i++) {
-    if (i === 5) {
-      timeCursor = addMinutes(timeCursor, 30); // 30 min break
+        if (eligible.length === 0) {
+          conflicts.push({
+            sectionId,
+            sectionName: `${section.classId.name} ${section.classId.stream || ''} Sec ${section.name}`,
+            day,
+            period: periodCursor,
+            subjectId: slot.subjectId,
+            reason: 'No eligible teacher available'
+          });
+          periodCursor += slot.periodsConsumed;
+          continue;
+        }
+
+        const best = scoreAndPick(eligible, day, teacherWeekCount, teacherDayCount, section);
+        const bId = best._id.toString();
+        
+        teacherBusy[bId][day].add(periodCursor);
+        if (slot.isDouble) teacherBusy[bId][day].add(periodCursor + 1);
+        teacherWeekCount[bId] += slot.periodsConsumed;
+        teacherDayCount[bId][day] += slot.periodsConsumed;
+
+        timetableSlots.push({
+          schoolId: section.schoolId,
+          sectionId: section._id,
+          classId: section.classId._id,
+          subjectId: slot.subjectId,
+          teacherId: best._id,
+          dayOfWeek: day,
+          periodNumber: periodCursor,
+          isDouble: slot.isDouble,
+          endPeriod: slot.isDouble ? periodCursor + 1 : periodCursor
+        });
+
+        periodCursor += slot.periodsConsumed;
+      }
     }
-    const endTime = addMinutes(timeCursor, 40);
-    timeSlots.push({ periodNumber: i, startTime: timeCursor, endTime: endTime });
-    timeCursor = endTime;
   }
 
-  // Find all teachers eligible for a specific subject
-  const getEligibleTeachers = (subjectName) => {
-    const cleanTargetSubj = subjectName.toLowerCase().replace('language & literature', '').trim();
-    return teacherProfiles.filter(tp => {
-      if (Array.isArray(tp.specializedSubjects) && tp.specializedSubjects.includes(subjectName)) return true;
-      if (Array.isArray(tp.subjectIds)) return tp.subjectIds.some(s => s.name && s.name.toLowerCase().includes(cleanTargetSubj));
-      return false;
-    });
+  return { timetableSlots, conflicts };
+}
+
+exports.runTimetableAlgorithm = async (reqData) => {
+  const { schoolId } = reqData;
+  console.log(`[Worker] Starting CBSE Compliant Auto-Generation for school: ${schoolId}`);
+  
+  const [allTeachers, allSections, subjects, subjectGroups] = await Promise.all([
+    TeacherProfile.find({ schoolId, isActive: true }).select('userId subjectIds assignedClasses designation assignedShift streamSpecialization'),
+    Section.find({ schoolId }).populate('classId'),
+    Subject.find({ schoolId }),
+    SubjectGroup.find({ schoolId })
+  ]);
+
+  const mainSections = allSections.filter(s => s.stageType !== 'Foundational');
+  const mainTeachers = allTeachers.filter(t => t.designation !== 'NTT');
+
+  const data = {
+    sections: mainSections,
+    teachers: mainTeachers,
+    subjects,
+    subjectGroups
   };
 
-  const backtrack = (dayIndex, periodIndex, currentDaySchedule) => {
-    // Base Case 1: Successfully filled all days
-    if (dayIndex >= DAYS.length) return true;
+  const { timetableSlots, conflicts } = await assignTimetable(data);
 
-    // Base Case 2: Successfully filled all periods for the current day. Move to next day.
-    if (periodIndex >= 8) {
-      masterSchedule.push({ dayOfWeek: DAYS[dayIndex], periods: [...currentDaySchedule] });
-      return backtrack(dayIndex + 1, 0, []);
-    }
-
-    const currentDay = DAYS[dayIndex];
-    const periodNumber = periodIndex + 1;
-    const slotTimes = timeSlots[periodIndex];
-    
-    // Prevent assigning the same subject too many times in one day
-    const subjectCounts = {};
-    currentDaySchedule.forEach(p => {
-      subjectCounts[p.subject] = (subjectCounts[p.subject] || 0) + 1;
-    });
-
-    let availableSubjects = subjects.filter(s => (subjectCounts[s.name] || 0) < 2);
-    if (availableSubjects.length === 0) availableSubjects = subjects; // fallback
-
-    const requiredSubject = availableSubjects.length > 0 ? availableSubjects[Math.floor(Math.random() * availableSubjects.length)].name : '';
-    
-    // Shuffle candidates so the algorithm doesn't heavily bias the first teacher in the DB for every single period
-    let candidates = getEligibleTeachers(requiredSubject).sort(() => Math.random() - 0.5);
-    
-    // Attempt to place a teacher
-    for (const tp of candidates) {
-      const tId = tp.userId.toString();
-      
-      // VALIDATION STEP: Check global matrix
-      if (teacherAvailability[currentDay][periodNumber][tId]) {
-         continue; // Reject placement, teacher is busy
-      }
-
-      // Teacher workload limit (don't give a teacher 8 periods in a row in the same class)
-      const periodsAssignedToTeacher = currentDaySchedule.filter(p => p.teacherId && p.teacherId.toString() === tId).length;
-      if (periodsAssignedToTeacher >= 2) {
-         continue; // Reject placement, this teacher is already teaching this class enough today
-      }
-
-      // LOCK STEP:
-      teacherAvailability[currentDay][periodNumber][tId] = true;
-      
-      currentDaySchedule.push({
-         periodNumber: periodNumber,
-         subject: requiredSubject,
-         teacherId: tp.userId,
-         startTime: slotTimes.startTime,
-         endTime: slotTimes.endTime
+  // Group slots into the schema structure:
+  // We need to convert timetableSlots into an array of { schoolId, classId, sectionId, schedule: [{ dayOfWeek, periods: [] }] }
+  const scheduleMap = new Map();
+  timetableSlots.forEach(slot => {
+    const key = `${slot.classId}_${slot.sectionId}`;
+    if (!scheduleMap.has(key)) {
+      scheduleMap.set(key, {
+        schoolId: slot.schoolId,
+        classId: slot.classId,
+        sectionId: slot.sectionId,
+        scheduleMap: new Map()
       });
-
-      // Recurse
-      if (backtrack(dayIndex, periodIndex + 1, currentDaySchedule)) {
-         return true; // Success path found
-      }
-
-      // BACKTRACK (UNLOCK) STEP: Dead end reached. Undo placement.
-      delete teacherAvailability[currentDay][periodNumber][tId];
-      currentDaySchedule.pop();
     }
-
-    // If no candidate worked (or there were no candidates/subjects), we allow a NULL assignment so the algorithm doesn't completely fail
-    currentDaySchedule.push({
-         periodNumber: periodNumber,
-         subject: requiredSubject,
-         teacherId: null,
-         startTime: slotTimes.startTime,
-         endTime: slotTimes.endTime
+    const secObj = scheduleMap.get(key);
+    if (!secObj.scheduleMap.has(slot.dayOfWeek)) secObj.scheduleMap.set(slot.dayOfWeek, []);
+    
+    // Find subject name
+    const subj = subjects.find(s => s._id.equals(slot.subjectId));
+    
+    secObj.scheduleMap.get(slot.dayOfWeek).push({
+      periodNumber: slot.periodNumber,
+      subject: subj ? subj.name : 'Unknown',
+      teacherId: slot.teacherId,
+      startTime: "00:00", // Will be filled dynamically by frontend/shift rules
+      endTime: "00:00"
     });
-    
-    if (backtrack(dayIndex, periodIndex + 1, currentDaySchedule)) {
-         return true;
-    }
-    
-    currentDaySchedule.pop();
-
-    return false; // Total failure to find a valid arrangement
-  };
-
-  // Start the backtracking recursion
-  backtrack(0, 0, []);
-
-  // 5. Save to Drafts Collection
-  const newDraft = await TimetableDraft.create({
-    schoolId,
-    classId,
-    sectionId,
-    schedule: masterSchedule,
-    status: 'draft'
   });
 
-  return newDraft._id;
+  const formattedDrafts = [];
+  scheduleMap.forEach(secObj => {
+    const schedule = [];
+    secObj.scheduleMap.forEach((periods, dayOfWeek) => {
+      schedule.push({ dayOfWeek, periods });
+    });
+    formattedDrafts.push({
+      schoolId: secObj.schoolId,
+      classId: secObj.classId,
+      sectionId: secObj.sectionId,
+      schedule,
+      status: 'draft',
+      conflicts: conflicts.filter(c => c.sectionId === secObj.sectionId.toString())
+    });
+  });
+
+  // Save drafts
+  const draftIds = [];
+  for (const draft of formattedDrafts) {
+    const created = await TimetableDraft.create(draft);
+    draftIds.push(created._id);
+  }
+
+  // Update Status
+  await TimetableStatus.findOneAndUpdate(
+    { schoolId },
+    { status: 'draft', lastGeneratedAt: new Date(), conflictCount: conflicts.length },
+    { upsert: true }
+  );
+
+  return draftIds[0]; // Return the first one for the legacy controller fallback
 };

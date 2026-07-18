@@ -98,7 +98,6 @@ exports.saveLunchMenu = async (req, res) => {
 // Background Generation Operations
 exports.triggerTimetableGeneration = async (req, res) => {
   try {
-    const { classId, sectionId, shift } = req.body;
     const schoolId = req.schoolId;
 
     const jobId = crypto.randomUUID();
@@ -107,7 +106,7 @@ exports.triggerTimetableGeneration = async (req, res) => {
     // Fire and forget (mocking background worker without Redis)
     setTimeout(async () => {
       try {
-        const draftId = await runTimetableAlgorithm({ classId, sectionId, shift, schoolId });
+        const draftId = await runTimetableAlgorithm({ schoolId });
         mockJobs.set(jobId, { status: 'completed', draftId });
       } catch (err) {
         console.error('Mock worker failed:', err);
