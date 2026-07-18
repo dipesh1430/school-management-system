@@ -1,0 +1,8 @@
+{
+  "name": "@school-saas/shared-types",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": {
+    "zod": "^3.22.4"
+  }
+}
