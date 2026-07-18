@@ -4,6 +4,10 @@ const { requireAuth, requireRole } = require('../middlewares/auth');
 
 const router = express.Router();
 
+// All authenticated users can get their own profile
+const { getMyProfile } = require('../controllers/userController');
+router.get('/me/profile', requireAuth, getMyProfile);
+
 // Most user management is for Admin/Principal/Superadmin
 router.use(requireAuth, requireRole(['admin', 'superadmin', 'principal']));
 

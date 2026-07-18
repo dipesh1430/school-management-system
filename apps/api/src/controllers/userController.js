@@ -256,4 +256,34 @@ const getUserProfile = async (req, res) => {
     res.status(500).json({ message: 'Server error while fetching user profile' });
   }
 };
-module.exports = { createStudent, createTeacher, createUser, getUsers, getStudentRoster, getStudentsByClass, getUserProfile };
+const getMyProfile = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const schoolId = req.schoolId;
+
+    const user = await User.findOne({ _id: userId, schoolId }).select('-passwordHash');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    let profile = null;
+    if (user.role === 'student') {
+      profile = await StudentProfile.findOne({ userId, schoolId })
+        .populate('classId', 'name stream')
+        .populate('sectionId', 'name');
+    } else if (user.role === 'teacher') {
+      profile = await TeacherProfile.findOne({ userId, schoolId })
+        .populate('assignedClasses.classId', 'name')
+        .populate('assignedClasses.sectionId', 'name')
+        .populate('subjectIds', 'name');
+    }
+    // Note: Parent profiles are not fully implemented yet in the API, but can be added here.
+
+    res.json({ user, profile });
+  } catch (error) {
+    console.error('Error fetching my profile:', error);
+    res.status(500).json({ message: 'Server error while fetching my profile' });
+  }
+};
+
+module.exports = { createStudent, createTeacher, createUser, getUsers, getStudentRoster, getStudentsByClass, getUserProfile, getMyProfile };
