@@ -10,6 +10,10 @@ const userSchema = new mongoose.Schema({
   profilePic: { type: String },
   isActive: { type: Boolean, default: true },
   
+  // Password Reset Tokens
+  resetPasswordToken: { type: String },
+  resetPasswordExpire: { type: Date },
+
   // Basic Demographics
   dob: { type: Date },
   gender: { type: String, enum: ['Male', 'Female', 'Other'] },

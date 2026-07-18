@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { useAuthStore } from '../store/authStore';
-import { Mail, Lock, Sparkles } from 'lucide-react-native';
+import { Mail, Lock, Sparkles, Eye, EyeOff } from 'lucide-react-native';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
@@ -64,10 +65,16 @@ export default function LoginScreen() {
             style={styles.input}
             placeholder="Password"
             placeholderTextColor="#94a3b8"
-            secureTextEntry
+            secureTextEntry={!showPassword}
             value={password}
             onChangeText={setPassword}
           />
+          <TouchableOpacity 
+            style={{ paddingHorizontal: 16 }}
+            onPress={() => setShowPassword(!showPassword)}
+          >
+            {showPassword ? <EyeOff color="#94a3b8" size={20} /> : <Eye color="#94a3b8" size={20} />}
+          </TouchableOpacity>
         </View>
 
         <TouchableOpacity 

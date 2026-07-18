@@ -14,13 +14,14 @@ export interface FeeRecord {
   transactionId?: string;
 }
 
-export const useFees = () => {
+export const useFees = (options?: { enabled?: boolean }) => {
   return useQuery<FeeRecord[]>({
     queryKey: ['fees'],
     queryFn: async () => {
       const { data } = await api.get('/fees');
       return data;
     },
+    enabled: options?.enabled ?? true,
   });
 };
 

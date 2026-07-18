@@ -9,8 +9,10 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTo
 
 export default function Dashboard() {
   const { user } = useAuthStore();
-  const { data: users } = useUsers();
-  const { data: fees } = useFees();
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+
+  const { data: users } = useUsers({ enabled: isAdmin });
+  const { data: fees } = useFees({ enabled: isAdmin });
   const { data: notices } = useNotices();
   const { data: events } = useEvents();
 

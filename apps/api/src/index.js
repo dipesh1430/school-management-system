@@ -18,6 +18,7 @@ app.get('/health', (req, res) => {
 // Import Routes
 const systemRoutes = require('./routes/systemRoutes');
 const timetableRoutes = require('./routes/timetableRoutes');
+const passwordRoutes = require('./routes/passwordRoutes');
 
 // Initialize background workers
 require('./workers/timetableWorker');
@@ -40,6 +41,7 @@ app.use('/api/v1/fees', require('./routes/feeRoutes'));
 app.use('/api/v1/leaves', require('./routes/leaveRoutes'));
 app.use('/api/v1/system', systemRoutes);
 app.use('/api/v1/timetables', timetableRoutes);
+app.use('/api/v1/password', passwordRoutes);
 
 // Database connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/school-saas';

@@ -16,13 +16,14 @@ export interface UserData {
   };
 }
 
-export const useUsers = () => {
+export const useUsers = (options?: { enabled?: boolean }) => {
   return useQuery<UserData[]>({
     queryKey: ['users'],
     queryFn: async () => {
       const { data } = await api.get('/users');
       return data;
     },
+    enabled: options?.enabled ?? true,
   });
 };
 

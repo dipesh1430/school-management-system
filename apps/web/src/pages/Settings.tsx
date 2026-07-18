@@ -1,16 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { useMySchool, useUpdateSchool } from '../hooks/useSchools';
-import { Building2, MapPin, Settings as SettingsIcon, Save, Image as ImageIcon, ShieldCheck, Clock, Calculator, CheckCircle2 } from 'lucide-react';
+import { Building2, MapPin, Settings as SettingsIcon, Save, Image as ImageIcon, ShieldCheck, Clock, Calculator, CheckCircle2, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
 import CustomSelect from '../components/ui/CustomSelect';
+import { usePasswordRequests, useApprovePasswordRequest } from '../hooks/usePassword';
 
-type Tab = 'general' | 'cbse' | 'academic' | 'timetable' | 'grading';
+type Tab = 'general' | 'cbse' | 'academic' | 'timetable' | 'grading' | 'security';
 
 export default function Settings() {
   const { data: school, isLoading } = useMySchool();
   const updateMutation = useUpdateSchool();
 
   const [activeTab, setActiveTab] = useState<Tab>('general');
+  const { data: passwordRequests, isLoading: isLoadingRequests } = usePasswordRequests();
+  const approveMutation = useApprovePasswordRequest();
+  const [resetPasswords, setResetPasswords] = useState<Record<string, string>>({});
 
   // Form State
   const [formData, setFormData] = useState<any>({
@@ -95,6 +99,7 @@ export default function Settings() {
     { id: 'academic', label: 'Academic & Shifts', icon: Clock },
     { id: 'timetable', label: 'Timetable Rules', icon: SettingsIcon },
     { id: 'grading', label: 'Grading Schema', icon: Calculator },
+    { id: 'security', label: 'Security & Access', icon: Lock },
   ];
 
   return (
@@ -331,19 +336,86 @@ export default function Settings() {
                 </div>
               )}
 
+              {/* Tab 6: Security & Access (Password Resets) */}
+              {activeTab === 'security' && (
+                <div className="space-y-6 animate-in fade-in duration-300">
+                  <div className="flex items-center space-x-3 mb-6 pb-4 border-b border-slate-100 dark:border-slate-800/50">
+                    <Lock className="w-5 h-5 text-indigo-500" />
+                    <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Security & Password Requests</h2>
+                  </div>
+                  
+                  <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800">
+                      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Pending Teacher Password Resets</h3>
+                    </div>
+                    {isLoadingRequests ? (
+                      <div className="p-4 text-center text-sm text-slate-500">Loading requests...</div>
+                    ) : passwordRequests?.length === 0 ? (
+                      <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">No pending password reset requests.</div>
+                    ) : (
+                      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {passwordRequests?.map((request) => (
+                          <li key={request._id} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                            <div>
+                              <p className="text-sm font-bold text-slate-900 dark:text-white">{request.requestedBy.name}</p>
+                              <p className="text-xs text-slate-500 dark:text-slate-400">{request.requestedBy.email}</p>
+                              <p className="text-[10px] text-slate-400 mt-1">Requested: {new Date(request.createdAt).toLocaleString()}</p>
+                            </div>
+                            <div className="flex items-center space-x-3">
+                              <input
+                                type="text"
+                                placeholder="Enter new password"
+                                value={resetPasswords[request._id] || ''}
+                                onChange={(e) => setResetPasswords({...resetPasswords, [request._id]: e.target.value})}
+                                className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if(!resetPasswords[request._id]) {
+                                    toast.error('Please enter a new password');
+                                    return;
+                                  }
+                                  approveMutation.mutate(
+                                    { requestId: request._id, newPassword: resetPasswords[request._id] },
+                                    {
+                                      onSuccess: () => {
+                                        toast.success('Password reset successfully');
+                                        setResetPasswords({...resetPasswords, [request._id]: ''});
+                                      },
+                                      onError: () => toast.error('Failed to reset password')
+                                    }
+                                  );
+                                }}
+                                disabled={approveMutation.isPending}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm font-bold transition-colors"
+                              >
+                                Approve & Reset
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              )}
+
             </div>
             
             {/* Footer */}
-            <div className="p-6 border-t border-slate-100 dark:border-slate-800/50 flex justify-end bg-slate-50/50 dark:bg-slate-950/50 rounded-b-2xl">
-              <button
-                type="submit"
-                disabled={updateMutation.isPending}
-                className="inline-flex items-center px-6 py-2.5 border border-transparent shadow-sm text-sm font-bold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all active:scale-[0.98] disabled:opacity-50"
-              >
-                {updateMutation.isPending ? <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin mr-2" /> : <Save className="-ml-1 mr-2 h-4 w-4" />}
-                {updateMutation.isPending ? 'Saving...' : 'Save All Changes'}
-              </button>
-            </div>
+            {activeTab !== 'security' && (
+              <div className="p-6 border-t border-slate-100 dark:border-slate-800/50 flex justify-end bg-slate-50/50 dark:bg-slate-950/50 rounded-b-2xl">
+                <button
+                  type="submit"
+                  disabled={updateMutation.isPending}
+                  className="inline-flex items-center px-6 py-2.5 border border-transparent shadow-sm text-sm font-bold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all active:scale-[0.98] disabled:opacity-50"
+                >
+                  {updateMutation.isPending ? <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin mr-2" /> : <Save className="-ml-1 mr-2 h-4 w-4" />}
+                  {updateMutation.isPending ? 'Saving...' : 'Save All Changes'}
+                </button>
+              </div>
+            )}
           </form>
         </div>
       </div>
